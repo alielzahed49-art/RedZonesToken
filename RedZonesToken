@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         RedZonesBot Token Helper
 // @namespace    redzonesbot
-// @version      1.0
+// @version      1.1
 // @description  Shows X-Session-Token and X-Client-Device on the game page. Sends nothing anywhere.
 // @match        https://redzones.io/*
 // @match        https://*.redzones.io/*
 // @run-at       document-start
+// @updateURL    https://raw.githubusercontent.com/alielzahed49-art/RedZonesToken/refs/heads/main/RedZonesToken
+// @downloadURL  https://raw.githubusercontent.com/alielzahed49-art/RedZonesToken/refs/heads/main/RedZonesToken
 // @grant        none
 // ==/UserScript==
 
@@ -172,25 +174,38 @@
     var old = document.getElementById('__rzGrabBox');
     if (old) old.remove();
     if (closed) return;
-    var base = 'position:fixed;z-index:2147483647;top:8px;background:rgb(23,29,37);color:rgb(232,235,240);border:1px solid rgb(79,70,229);border-radius:12px;font-family:system-ui,sans-serif;font-size:14px;direction:rtl;text-align:right;box-shadow:0 8px 30px rgba(0,0,0,.6);';
-    var box = el('div', collapsed ? base + 'right:8px;padding:8px 12px' : base + 'left:8px;right:8px;max-height:85vh;overflow:auto;padding:12px');
+    var hasT = !!pick('token').main, hasD = !!pick('device').main;
+    var box;
+
+    if (collapsed) {
+      var dot = hasT && hasD ? GREEN : (hasT || hasD ? 'rgb(251,191,36)' : 'rgb(107,118,132)');
+      box = el('div', 'position:fixed;z-index:2147483647;top:8px;right:8px;width:44px;height:44px;border-radius:50%;background:rgb(23,29,37);border:1px solid rgb(79,70,229);color:rgb(232,235,240);font:700 13px system-ui,sans-serif;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.6);user-select:none');
+      box.id = '__rzGrabBox';
+      box.title = 'RedZonesBot - توكن ' + (hasT ? '✓' : '—') + ' · جهاز ' + (hasD ? '✓' : '—');
+      box.setAttribute('role', 'button');
+      box.appendChild(document.createTextNode('RZ'));
+      box.appendChild(el('span', 'position:absolute;bottom:1px;left:1px;width:11px;height:11px;border-radius:50%;border:2px solid rgb(23,29,37);background:' + dot));
+      box.onclick = function () { collapsed = false; render(); };
+      document.body.appendChild(box);
+      return;
+    }
+
+    box = el('div', 'position:fixed;z-index:2147483647;top:8px;left:8px;right:8px;max-height:85vh;overflow:auto;background:rgb(23,29,37);color:rgb(232,235,240);border:1px solid rgb(79,70,229);border-radius:12px;padding:12px;font-family:system-ui,sans-serif;font-size:14px;direction:rtl;text-align:right;box-shadow:0 8px 30px rgba(0,0,0,.6)');
     box.id = '__rzGrabBox';
     var head = el('div', 'display:flex;align-items:center;gap:8px;cursor:pointer');
-    head.appendChild(el('span', 'color:rgb(160,170,185)', collapsed ? '▸' : '▾'));
-    head.appendChild(el('b', 'flex:1', collapsed ? 'RedZonesBot' : 'RedZonesBot - بيانات الحساب'));
-    if (collapsed) {
-      head.appendChild(el('span', 'font-size:12px;color:rgb(160,170,185)', 'توكن ' + (pick('token').main ? '✓' : '—') + ' · جهاز ' + (pick('device').main ? '✓' : '—')));
-    }
+    head.appendChild(el('span', 'color:rgb(160,170,185)', '▾'));
+    head.appendChild(el('b', 'flex:1', 'RedZonesBot - بيانات الحساب'));
+    var fold = el('button', 'border:1px solid rgb(52,62,76);background:rgb(30,37,47);color:rgb(232,235,240);border-radius:6px;font-size:12px;padding:3px 10px', 'طي ▴');
+    fold.onclick = function (ev) { ev.stopPropagation(); collapsed = true; render(); };
+    head.appendChild(fold);
     var x = el('button', 'border:0;background:transparent;color:rgb(160,170,185);font-size:18px;padding:0 4px', '✕');
     x.onclick = function (ev) { ev.stopPropagation(); closed = true; box.remove(); };
     head.appendChild(x);
-    head.onclick = function () { collapsed = !collapsed; render(); };
+    head.onclick = function () { collapsed = true; render(); };
     box.appendChild(head);
-    if (!collapsed) {
-      section(box, 'token', 'التوكن (X-Session-Token)');
-      section(box, 'device', 'معرّف الجهاز (X-Client-Device)');
-      box.appendChild(el('div', 'margin-top:10px;font-size:11px;color:rgb(160,170,185)', 'التوكن بيدي تحكم كامل في حسابك - متبعتوش لحد ومتصورش الشاشة دي. السكربت ده مبيبعتش أي حاجة لأي مكان.'));
-    }
+    section(box, 'token', 'التوكن (X-Session-Token)');
+    section(box, 'device', 'معرّف الجهاز (X-Client-Device)');
+    box.appendChild(el('div', 'margin-top:10px;font-size:11px;color:rgb(160,170,185)', 'التوكن بيدي تحكم كامل في حسابك - متبعتوش لحد ومتصورش الشاشة دي. السكربت ده مبيبعتش أي حاجة لأي مكان.'));
     document.body.appendChild(box);
   }
 

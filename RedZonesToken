@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RedZonesBot Token Helper
 // @namespace    redzonesbot
-// @version      1.3
+// @version      1.4
 // @description  Shows X-Session-Token and X-Client-Device on the game page, plus an optional request recorder. Sends nothing anywhere.
 // @match        https://redzones.io/*
 // @match        https://*.redzones.io/*
@@ -25,6 +25,10 @@
   var recording = false, devOpen = false, recs = [];
   var MAX_RECS = 120, REQ_MAX = 600, RES_MAX = 3500;
   var RELEVANT = /wallet|transfer|transaction|money|history|payment|ledger|balance|bank|deposit/i;
+  // أفعال (بدء/إيقاف/هجوم/عرض سعر...) وأي طلب مش GET: نسجّل الـ body اللي اتبعت + رد قصير
+  var ACTION = /auto-|\/attack|preview|\/start|\/stop|\/quote|\/upgrade/i;
+  var NOISE = /\/analytics\/|\/player\/activity/;
+  var ACT_MAX = 900;
   var restOpen = { token: false, device: false };
   var GREEN = 'rgb(45,212,191)', GREY = 'rgb(160,170,185)';
 
@@ -125,18 +129,19 @@
     var x = parseUrl(url);
     if (!x) return;
     var full = x.pathname + x.search;
+    if (NOISE.test(full)) return;
     var key = method + ' ' + full;
     for (var i = 0; i < recs.length; i++) { if (recs[i].key === key) { recs.splice(i, 1); break; } }
     // bodies are kept only for money/wallet/transfer/history paths, everything else is one line
-    var rel = RELEVANT.test(full);
+    var rel = RELEVANT.test(full), act = ACTION.test(full) || method !== 'GET';
     recs.push({ key: key, method: method, path: clip(full, 220), status: status,
-                req: rel ? clip(redact(reqBody), REQ_MAX) : '',
-                res: rel ? clip(redact(resText), RES_MAX) : '(body skipped)' });
+                req: (rel || act) ? clip(redact(reqBody), REQ_MAX) : '',
+                res: rel ? clip(redact(resText), RES_MAX) : (act ? clip(redact(resText), ACT_MAX) : '(body skipped)') });
     if (recs.length > MAX_RECS) recs.shift();
     updateRecCount();
   }
   function recsText() {
-    var out = ['RedZonesBot capture v1.3 - ' + recs.length + ' requests (tokens redacted)', ''];
+    var out = ['RedZonesBot capture v1.4 - ' + recs.length + ' requests (tokens redacted)', ''];
     recs.forEach(function (r, i) {
       out.push('#' + (i + 1) + ' ' + r.method + ' ' + r.path + ' -> ' + r.status);
       if (r.req) out.push('req: ' + r.req);

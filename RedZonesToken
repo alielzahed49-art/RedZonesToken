@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RedZonesBot Token Helper
 // @namespace    redzonesbot
-// @version      1.4
+// @version      1.5
 // @description  Shows X-Session-Token and X-Client-Device on the game page, plus an optional request recorder. Sends nothing anywhere.
 // @match        https://redzones.io/*
 // @match        https://*.redzones.io/*
@@ -141,7 +141,7 @@
     updateRecCount();
   }
   function recsText() {
-    var out = ['RedZonesBot capture v1.4 - ' + recs.length + ' requests (tokens redacted)', ''];
+    var out = ['RedZonesBot capture v1.5 - ' + recs.length + ' requests (tokens redacted)', ''];
     recs.forEach(function (r, i) {
       out.push('#' + (i + 1) + ' ' + r.method + ' ' + r.path + ' -> ' + r.status);
       if (r.req) out.push('req: ' + r.req);
@@ -247,8 +247,62 @@
     }
   }
 
+  // ---- سحب الفقاعة/اللوحة بالصباع (pointer events) + حفظ المكان ----
+  var POS_KEY = '__rz_pos_v1', dragging = false, justDragged = false;
+  function loadPos(k) {
+    try { var o = JSON.parse(localStorage.getItem(POS_KEY) || '{}'); var v = o[k];
+      if (v && isFinite(v.x) && isFinite(v.y)) return { x: +v.x, y: +v.y }; } catch (e) {}
+    return null;
+  }
+  function savePos(k, v) {
+    try { var o = JSON.parse(localStorage.getItem(POS_KEY) || '{}'); o[k] = { x: Math.round(v.x), y: Math.round(v.y) };
+      localStorage.setItem(POS_KEY, JSON.stringify(o)); } catch (e) {}
+  }
+  function clampXY(x, y, w, keepY) {
+    return { x: Math.min(Math.max(0, x), Math.max(0, window.innerWidth - w)),
+             y: Math.min(Math.max(0, y), Math.max(0, window.innerHeight - keepY)) };
+  }
+  // اللوحة بتفضل بحد أقصى للطول يوصل لآخر الشاشة عشان لو اتسحبت لتحت تفضل تتحرك جواها
+  function fitPanel(box, y) { box.style.maxHeight = Math.max(120, window.innerHeight - y - 8) + 'px'; }
+  function makeDraggable(box, handle, key, keepY, isPanel) {
+    handle.style.touchAction = 'none';
+    handle.addEventListener('pointerdown', function (e) {
+      if (e.button !== undefined && e.button !== 0) return;
+      if (e.target !== handle && e.target.closest && e.target.closest('button')) return; // الأزرار تفضل شغالة
+      var r = box.getBoundingClientRect();
+      var sx = e.clientX, sy = e.clientY, ox = r.left, oy = r.top, w = r.width, moved = false;
+      try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+      function mv(ev) {
+        var dx = ev.clientX - sx, dy = ev.clientY - sy;
+        if (!moved && Math.abs(dx) + Math.abs(dy) < 6) return;
+        if (!moved) { moved = true; dragging = true; box.style.width = w + 'px'; box.style.right = 'auto'; }
+        var np = clampXY(ox + dx, oy + dy, w, keepY);
+        box.style.left = np.x + 'px'; box.style.top = np.y + 'px';
+        if (isPanel) fitPanel(box, np.y);
+        ev.preventDefault();
+      }
+      function up() {
+        handle.removeEventListener('pointermove', mv);
+        handle.removeEventListener('pointerup', up);
+        handle.removeEventListener('pointercancel', up);
+        try { handle.releasePointerCapture(e.pointerId); } catch (err) {}
+        if (moved) {
+          var r2 = box.getBoundingClientRect();
+          savePos(key, { x: r2.left, y: r2.top });
+          justDragged = true; setTimeout(function () { justDragged = false; }, 300);
+          dragging = false;
+          if (dirty) render();
+        }
+      }
+      handle.addEventListener('pointermove', mv);
+      handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', up);
+    });
+  }
+
   function render() {
     if (!document.body) return;
+    if (dragging) { dirty = true; return; }
     scanAll();
     dirty = false;
     var old = document.getElementById('__rzGrabBox');
@@ -259,21 +313,26 @@
 
     if (collapsed) {
       var dot = recording ? 'rgb(239,68,68)' : (hasT && hasD ? GREEN : (hasT || hasD ? 'rgb(251,191,36)' : 'rgb(107,118,132)'));
-      box = el('div', 'position:fixed;z-index:2147483647;top:8px;right:8px;width:44px;height:44px;border-radius:50%;background:rgb(23,29,37);border:1px solid rgb(79,70,229);color:rgb(232,235,240);font:700 13px system-ui,sans-serif;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.6);user-select:none');
+      box = el('div', 'box-sizing:border-box;position:fixed;z-index:2147483647;width:44px;height:44px;border-radius:50%;background:rgb(23,29,37);border:1px solid rgb(79,70,229);color:rgb(232,235,240);font:700 13px system-ui,sans-serif;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.6);user-select:none');
       box.id = '__rzGrabBox';
       box.title = 'RedZonesBot - توكن ' + (hasT ? '✓' : '—') + ' · جهاز ' + (hasD ? '✓' : '—') + (recording ? ' · بيسجّل' : '');
       box.setAttribute('role', 'button');
       box.appendChild(document.createTextNode('RZ'));
       box.appendChild(el('span', 'position:absolute;bottom:1px;left:1px;width:11px;height:11px;border-radius:50%;border:2px solid rgb(23,29,37);background:' + dot));
-      box.onclick = function () { collapsed = false; render(); };
+      var bp = clampXY((loadPos('b') || { x: window.innerWidth - 52, y: 8 }).x, (loadPos('b') || { y: 8 }).y, 44, 44);
+      box.style.left = bp.x + 'px'; box.style.top = bp.y + 'px';
+      box.style.touchAction = 'none';
+      box.title += ' · اسحبها لأي مكان';
+      makeDraggable(box, box, 'b', 44, false);
+      box.onclick = function () { if (justDragged) return; collapsed = false; render(); };
       document.body.appendChild(box);
       return;
     }
 
-    box = el('div', 'position:fixed;z-index:2147483647;top:8px;left:8px;right:8px;max-height:85vh;overflow:auto;background:rgb(23,29,37);color:rgb(232,235,240);border:1px solid rgb(79,70,229);border-radius:12px;padding:12px;font-family:system-ui,sans-serif;font-size:14px;direction:rtl;text-align:right;box-shadow:0 8px 30px rgba(0,0,0,.6)');
+    box = el('div', 'box-sizing:border-box;position:fixed;z-index:2147483647;top:8px;left:8px;right:8px;max-height:85vh;overflow:auto;background:rgb(23,29,37);color:rgb(232,235,240);border:1px solid rgb(79,70,229);border-radius:12px;padding:12px;font-family:system-ui,sans-serif;font-size:14px;direction:rtl;text-align:right;box-shadow:0 8px 30px rgba(0,0,0,.6)');
     box.id = '__rzGrabBox';
-    var head = el('div', 'display:flex;align-items:center;gap:8px;cursor:pointer');
-    head.appendChild(el('span', 'color:rgb(160,170,185)', '▾'));
+    var head = el('div', 'display:flex;align-items:center;gap:8px;cursor:grab;user-select:none');
+    head.appendChild(el('span', 'color:rgb(160,170,185);letter-spacing:-2px', '⠿'));
     head.appendChild(el('b', 'flex:1', 'RedZonesBot - بيانات الحساب'));
     var fold = el('button', 'border:1px solid rgb(52,62,76);background:rgb(30,37,47);color:rgb(232,235,240);border-radius:6px;font-size:12px;padding:3px 10px', 'طي ▴');
     fold.onclick = function (ev) { ev.stopPropagation(); collapsed = true; render(); };
@@ -281,8 +340,16 @@
     var x = el('button', 'border:0;background:transparent;color:rgb(160,170,185);font-size:18px;padding:0 4px', '✕');
     x.onclick = function (ev) { ev.stopPropagation(); closed = true; box.remove(); };
     head.appendChild(x);
-    head.onclick = function () { collapsed = true; render(); };
+    head.onclick = function () { if (justDragged) return; collapsed = true; render(); };
     box.appendChild(head);
+    var pp = loadPos('p');
+    if (pp) {
+      var pw = Math.min(window.innerWidth - 16, 420);
+      pp = clampXY(pp.x, pp.y, pw, 60);
+      box.style.right = 'auto'; box.style.width = pw + 'px'; box.style.left = pp.x + 'px'; box.style.top = pp.y + 'px';
+      fitPanel(box, pp.y);
+    }
+    makeDraggable(box, head, 'p', 60, true);
     section(box, 'token', 'التوكن (X-Session-Token)');
     section(box, 'device', 'معرّف الجهاز (X-Client-Device)');
     var tools = el('button', 'display:block;margin-top:12px;border:0;background:transparent;color:rgb(160,170,185);font-size:12px;padding:2px 0', (devOpen ? '▾' : '▸') + ' أدوات المطوّر - تسجيل طلبات اللعبة' + (recording ? ' (شغّال)' : ''));
@@ -319,6 +386,8 @@
   }
 
   setInterval(function () { if (!closed) { scanAll(); refresh(); } }, 2000);
+  var rzT = null;
+  window.addEventListener('resize', function () { clearTimeout(rzT); rzT = setTimeout(function () { if (!closed && !dragging) render(); }, 200); });
   window.__rzGrab = { open: function () { closed = false; collapsed = false; render(); } };
   whenBody(render);
 })();

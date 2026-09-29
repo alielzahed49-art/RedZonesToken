@@ -1,0 +1,205 @@
+// ==UserScript==
+// @name         RedZonesBot Token Helper
+// @namespace    redzonesbot
+// @version      1.0
+// @description  Shows X-Session-Token and X-Client-Device on the game page. Sends nothing anywhere.
+// @match        https://redzones.io/*
+// @match        https://*.redzones.io/*
+// @run-at       document-start
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+  if (window.top !== window) return;
+  if (!/(^|\.)redzones\.io$/i.test(location.hostname)) return;
+  if (window.__rzGrab) return;
+
+  var HEX64 = /^[0-9a-f]{64}$/i;
+  var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  var KNOWN_DEVICE_KEY = 'red-zones-client-device-id';
+  var items = { token: [], device: [] };
+  var seq = 0, dirty = false, collapsed = true, closed = false;
+  var restOpen = { token: false, device: false };
+  var GREEN = 'rgb(45,212,191)', GREY = 'rgb(160,170,185)';
+
+  function latestLive(list) {
+    var best = null;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].live && (!best || list[i].seq > best.seq)) best = list[i];
+    }
+    return best;
+  }
+
+  function add(kind, val, src, live, known) {
+    val = String(val || '').trim();
+    if (!val) return;
+    var list = items[kind], it = null;
+    for (var i = 0; i < list.length; i++) { if (list[i].val === val) { it = list[i]; break; } }
+    if (!it) { it = { val: val, src: src, live: false, known: false, seq: 0 }; list.push(it); dirty = true; }
+    if (known && !it.known) { it.known = true; if (!it.live) it.src = src; dirty = true; }
+    if (live && latestLive(list) !== it) { it.live = true; it.src = src; it.seq = ++seq; dirty = true; }
+  }
+
+  function pick(kind) {
+    var list = items[kind], main = latestLive(list);
+    if (!main && kind === 'device') main = list.filter(function (x) { return x.known; })[0] || null;
+    if (!main && list.length === 1) main = list[0];
+    if (!main && kind === 'token') {
+      var pref = list.filter(function (x) { return /token|auth|session/i.test(x.src); });
+      if (pref.length === 1) main = pref[0];
+    }
+    return { main: main, rest: list.filter(function (x) { return x !== main; }) };
+  }
+
+  function walk(o, out) {
+    if (o && typeof o === 'object') { for (var k in o) walk(o[k], out); }
+    else if (typeof o === 'string') out.push(o);
+  }
+
+  function scan(store, name) {
+    try {
+      for (var i = 0; i < store.length; i++) {
+        var k = store.key(i);
+        var v = store.getItem(k) || '';
+        var cands = [v];
+        try { walk(JSON.parse(v), cands); } catch (e) {}
+        for (var j = 0; j < cands.length; j++) {
+          var c = String(cands[j]).trim();
+          if (HEX64.test(c)) add('token', c, name + ' : ' + k, false, false);
+          else if (UUID.test(c)) add('device', c, name + ' : ' + k, false, k === KNOWN_DEVICE_KEY);
+        }
+      }
+    } catch (e) {}
+  }
+
+  function scanAll() {
+    try { scan(window.localStorage, 'localStorage'); } catch (e) {}
+    try { scan(window.sessionStorage, 'sessionStorage'); } catch (e) {}
+    try {
+      document.cookie.split(';').forEach(function (p) {
+        var kv = p.split('=');
+        var v = decodeURIComponent((kv[1] || '').trim());
+        if (HEX64.test(v)) add('token', v, 'cookie : ' + kv[0].trim(), false, false);
+        else if (UUID.test(v)) add('device', v, 'cookie : ' + kv[0].trim(), false, false);
+      });
+    } catch (e) {}
+  }
+
+  function cap(name, val) {
+    name = String(name).toLowerCase();
+    if (name === 'x-session-token') add('token', val, 'من طلب حقيقي للعبة', true, false);
+    else if (name === 'x-client-device') add('device', val, 'من طلب حقيقي للعبة', true, false);
+  }
+  function readHeaders(h) {
+    if (!h) return;
+    if (Array.isArray(h)) h.forEach(function (p) { cap(p[0], p[1]); });
+    else if (typeof h.forEach === 'function') h.forEach(function (v, k) { cap(k, v); });
+    else for (var k in h) cap(k, h[k]);
+  }
+  function refresh() { if (dirty && !closed) render(); }
+
+  var origFetch = window.fetch;
+  if (origFetch) {
+    window.fetch = function (a, b) {
+      try { readHeaders((b && b.headers) || (a && a.headers)); refresh(); } catch (e) {}
+      return origFetch.apply(this, arguments);
+    };
+  }
+  var origSet = XMLHttpRequest.prototype.setRequestHeader;
+  XMLHttpRequest.prototype.setRequestHeader = function (n, v) {
+    try { cap(n, v); refresh(); } catch (e) {}
+    return origSet.apply(this, arguments);
+  };
+
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+  function copy(text, btn) {
+    var done = function () { var t = btn.textContent; btn.textContent = 'اتنسخ'; setTimeout(function () { btn.textContent = t; }, 1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done(); });
+    } else { fallbackCopy(text); done(); }
+  }
+
+  function el(tag, css, text) {
+    var e = document.createElement(tag);
+    if (css) e.style.cssText = css;
+    if (text) e.textContent = text;
+    return e;
+  }
+
+  function row(it) {
+    var good = it.live || it.known;
+    var r = el('div', 'background:rgb(30,37,47);border:1px solid rgb(52,62,76);border-radius:8px;padding:8px;margin-bottom:6px');
+    r.appendChild(el('div', 'font-size:11px;margin-bottom:4px;word-break:break-all;color:' + (good ? GREEN : GREY), (good ? '✓ ' : '') + it.src));
+    r.appendChild(el('div', 'font-family:monospace;font-size:12px;word-break:break-all;direction:ltr;text-align:left;user-select:all', it.val));
+    var b = el('button', 'margin-top:6px;padding:6px 14px;border:0;border-radius:6px;background:rgb(79,70,229);color:white;font-size:13px', 'نسخ');
+    b.onclick = function () { copy(it.val, b); };
+    r.appendChild(b);
+    return r;
+  }
+
+  function section(box, kind, title) {
+    var p = pick(kind);
+    box.appendChild(el('div', 'margin:12px 0 6px;font-weight:700;color:rgb(165,180,252)', title));
+    if (p.main) {
+      box.appendChild(row(p.main));
+      if (p.rest.length) {
+        var wrap = el('div', 'display:' + (restOpen[kind] ? 'block' : 'none'));
+        p.rest.forEach(function (it) { wrap.appendChild(row(it)); });
+        var t = el('button', 'border:0;background:transparent;color:rgb(160,170,185);font-size:12px;padding:2px 0', (restOpen[kind] ? '▾' : '▸') + ' قيم تانية (' + p.rest.length + ') - غالبًا مش هي');
+        t.onclick = function () { restOpen[kind] = !restOpen[kind]; render(); };
+        box.appendChild(t);
+        box.appendChild(wrap);
+      }
+    } else if (!p.rest.length) {
+      box.appendChild(el('div', 'color:rgb(160,170,185);font-size:12px', 'لسه مالقيتش - افتح أي صفحة جوه اللعبة وشوف'));
+    } else {
+      box.appendChild(el('div', 'color:rgb(251,191,36);font-size:12px;margin-bottom:6px', 'لقيت أكتر من قيمة ومقدرتش أحدد الصح - جرّب واحدة واحدة:'));
+      p.rest.forEach(function (it) { box.appendChild(row(it)); });
+    }
+  }
+
+  function render() {
+    if (!document.body) return;
+    scanAll();
+    dirty = false;
+    var old = document.getElementById('__rzGrabBox');
+    if (old) old.remove();
+    if (closed) return;
+    var base = 'position:fixed;z-index:2147483647;top:8px;background:rgb(23,29,37);color:rgb(232,235,240);border:1px solid rgb(79,70,229);border-radius:12px;font-family:system-ui,sans-serif;font-size:14px;direction:rtl;text-align:right;box-shadow:0 8px 30px rgba(0,0,0,.6);';
+    var box = el('div', collapsed ? base + 'right:8px;padding:8px 12px' : base + 'left:8px;right:8px;max-height:85vh;overflow:auto;padding:12px');
+    box.id = '__rzGrabBox';
+    var head = el('div', 'display:flex;align-items:center;gap:8px;cursor:pointer');
+    head.appendChild(el('span', 'color:rgb(160,170,185)', collapsed ? '▸' : '▾'));
+    head.appendChild(el('b', 'flex:1', collapsed ? 'RedZonesBot' : 'RedZonesBot - بيانات الحساب'));
+    if (collapsed) {
+      head.appendChild(el('span', 'font-size:12px;color:rgb(160,170,185)', 'توكن ' + (pick('token').main ? '✓' : '—') + ' · جهاز ' + (pick('device').main ? '✓' : '—')));
+    }
+    var x = el('button', 'border:0;background:transparent;color:rgb(160,170,185);font-size:18px;padding:0 4px', '✕');
+    x.onclick = function (ev) { ev.stopPropagation(); closed = true; box.remove(); };
+    head.appendChild(x);
+    head.onclick = function () { collapsed = !collapsed; render(); };
+    box.appendChild(head);
+    if (!collapsed) {
+      section(box, 'token', 'التوكن (X-Session-Token)');
+      section(box, 'device', 'معرّف الجهاز (X-Client-Device)');
+      box.appendChild(el('div', 'margin-top:10px;font-size:11px;color:rgb(160,170,185)', 'التوكن بيدي تحكم كامل في حسابك - متبعتوش لحد ومتصورش الشاشة دي. السكربت ده مبيبعتش أي حاجة لأي مكان.'));
+    }
+    document.body.appendChild(box);
+  }
+
+  function whenBody(fn) {
+    if (document.body) { fn(); return; }
+    var t = setInterval(function () { if (document.body) { clearInterval(t); fn(); } }, 50);
+  }
+
+  setInterval(function () { if (!closed) { scanAll(); refresh(); } }, 2000);
+  window.__rzGrab = { open: function () { closed = false; collapsed = false; render(); } };
+  whenBody(render);
+})();

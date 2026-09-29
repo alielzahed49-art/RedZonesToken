@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         RedZonesBot Token Helper
 // @namespace    redzonesbot
-// @version      1.5
-// @description  Shows X-Session-Token and X-Client-Device on the game page, plus an optional request recorder. Sends nothing anywhere.
+// @version      1.6
+// @description  Shows X-Session-Token and X-Client-Device on the game page (draggable, foldable). Sends nothing anywhere.
 // @match        https://redzones.io/*
 // @match        https://*.redzones.io/*
 // @run-at       document-start
@@ -22,13 +22,6 @@
   var KNOWN_DEVICE_KEY = 'red-zones-client-device-id';
   var items = { token: [], device: [] };
   var seq = 0, dirty = false, collapsed = true, closed = false;
-  var recording = false, devOpen = false, recs = [];
-  var MAX_RECS = 120, REQ_MAX = 600, RES_MAX = 3500;
-  var RELEVANT = /wallet|transfer|transaction|money|history|payment|ledger|balance|bank|deposit/i;
-  // أفعال (بدء/إيقاف/هجوم/عرض سعر...) وأي طلب مش GET: نسجّل الـ body اللي اتبعت + رد قصير
-  var ACTION = /auto-|\/attack|preview|\/start|\/stop|\/quote|\/upgrade/i;
-  var NOISE = /\/analytics\/|\/player\/activity/;
-  var ACT_MAX = 900;
   var restOpen = { token: false, device: false };
   var GREEN = 'rgb(45,212,191)', GREY = 'rgb(160,170,185)';
 
@@ -108,86 +101,13 @@
   }
   function refresh() { if (dirty && !closed) render(); }
 
-  // ---- request recorder (off by default; only runs after the user taps "start") ----
-  function redact(s) {
-    return String(s == null ? '' : s)
-      .replace(/[0-9a-f]{64}/gi, '<TOKEN>')
-      .replace(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}/g, '<JWT>');
-  }
-  function clip(s, n) { return s.length > n ? s.slice(0, n) + ' …[' + s.length + ' chars]' : s; }
-  function parseUrl(u) { try { return new URL(String(u), location.href); } catch (e) { return null; } }
-  function isApi(u) {
-    var x = parseUrl(u);
-    return !!x && /(^|\.)redzones\.io$/i.test(x.hostname) && x.pathname.indexOf('/api/') === 0;
-  }
-  function updateRecCount() {
-    var c = document.getElementById('__rzRecCount');
-    if (c) c.textContent = recs.length + ' طلب';
-  }
-  function record(method, url, reqBody, status, resText) {
-    if (!recording) return;
-    var x = parseUrl(url);
-    if (!x) return;
-    var full = x.pathname + x.search;
-    if (NOISE.test(full)) return;
-    var key = method + ' ' + full;
-    for (var i = 0; i < recs.length; i++) { if (recs[i].key === key) { recs.splice(i, 1); break; } }
-    // bodies are kept only for money/wallet/transfer/history paths, everything else is one line
-    var rel = RELEVANT.test(full), act = ACTION.test(full) || method !== 'GET';
-    recs.push({ key: key, method: method, path: clip(full, 220), status: status,
-                req: (rel || act) ? clip(redact(reqBody), REQ_MAX) : '',
-                res: rel ? clip(redact(resText), RES_MAX) : (act ? clip(redact(resText), ACT_MAX) : '(body skipped)') });
-    if (recs.length > MAX_RECS) recs.shift();
-    updateRecCount();
-  }
-  function recsText() {
-    var out = ['RedZonesBot capture v1.5 - ' + recs.length + ' requests (tokens redacted)', ''];
-    recs.forEach(function (r, i) {
-      out.push('#' + (i + 1) + ' ' + r.method + ' ' + r.path + ' -> ' + r.status);
-      if (r.req) out.push('req: ' + r.req);
-      out.push('res: ' + r.res, '');
-    });
-    return out.join('\n');
-  }
-  function spyFetch(a, b, p) {
-    var url = typeof a === 'string' ? a : ((a && a.url) || String(a));
-    if (!isApi(url)) return;
-    var method = String((b && b.method) || (a && a.method) || 'GET').toUpperCase();
-    var body = b && b.body ? (typeof b.body === 'string' ? b.body : '[non-text body]') : '';
-    p.then(function (res) {
-      try { res.clone().text().then(function (t) { record(method, url, body, res.status, t); }, function () {}); } catch (e) {}
-    }, function () {});
-  }
-
   var origFetch = window.fetch;
   if (origFetch) {
     window.fetch = function (a, b) {
       try { readHeaders((b && b.headers) || (a && a.headers)); refresh(); } catch (e) {}
-      var p = origFetch.apply(this, arguments);
-      if (recording) { try { spyFetch(a, b, p); } catch (e) {} }
-      return p;
+      return origFetch.apply(this, arguments);
     };
   }
-  var origOpen = XMLHttpRequest.prototype.open, origSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open = function (m, u) {
-    try { this.__rz = { m: String(m).toUpperCase(), u: String(u) }; } catch (e) {}
-    return origOpen.apply(this, arguments);
-  };
-  XMLHttpRequest.prototype.send = function (body) {
-    try {
-      var x = this, meta = x.__rz;
-      if (recording && meta && isApi(meta.u)) {
-        x.addEventListener('loadend', function () {
-          try {
-            var t = (x.responseType === '' || x.responseType === 'text') ? x.responseText
-                  : (x.responseType === 'json' ? JSON.stringify(x.response) : '[' + x.responseType + ']');
-            record(meta.m, meta.u, body ? (typeof body === 'string' ? body : '[non-text body]') : '', x.status, t);
-          } catch (e) {}
-        });
-      }
-    } catch (e) {}
-    return origSend.apply(this, arguments);
-  };
   var origSet = XMLHttpRequest.prototype.setRequestHeader;
   XMLHttpRequest.prototype.setRequestHeader = function (n, v) {
     try { cap(n, v); refresh(); } catch (e) {}
@@ -312,10 +232,10 @@
     var box;
 
     if (collapsed) {
-      var dot = recording ? 'rgb(239,68,68)' : (hasT && hasD ? GREEN : (hasT || hasD ? 'rgb(251,191,36)' : 'rgb(107,118,132)'));
+      var dot = hasT && hasD ? GREEN : (hasT || hasD ? 'rgb(251,191,36)' : 'rgb(107,118,132)');
       box = el('div', 'box-sizing:border-box;position:fixed;z-index:2147483647;width:44px;height:44px;border-radius:50%;background:rgb(23,29,37);border:1px solid rgb(79,70,229);color:rgb(232,235,240);font:700 13px system-ui,sans-serif;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.6);user-select:none');
       box.id = '__rzGrabBox';
-      box.title = 'RedZonesBot - توكن ' + (hasT ? '✓' : '—') + ' · جهاز ' + (hasD ? '✓' : '—') + (recording ? ' · بيسجّل' : '');
+      box.title = 'RedZonesBot - توكن ' + (hasT ? '✓' : '—') + ' · جهاز ' + (hasD ? '✓' : '—');
       box.setAttribute('role', 'button');
       box.appendChild(document.createTextNode('RZ'));
       box.appendChild(el('span', 'position:absolute;bottom:1px;left:1px;width:11px;height:11px;border-radius:50%;border:2px solid rgb(23,29,37);background:' + dot));
@@ -352,30 +272,6 @@
     makeDraggable(box, head, 'p', 60, true);
     section(box, 'token', 'التوكن (X-Session-Token)');
     section(box, 'device', 'معرّف الجهاز (X-Client-Device)');
-    var tools = el('button', 'display:block;margin-top:12px;border:0;background:transparent;color:rgb(160,170,185);font-size:12px;padding:2px 0', (devOpen ? '▾' : '▸') + ' أدوات المطوّر - تسجيل طلبات اللعبة' + (recording ? ' (شغّال)' : ''));
-    tools.onclick = function () { devOpen = !devOpen; render(); };
-    box.appendChild(tools);
-    if (devOpen) {
-      var dev = el('div', 'background:rgb(30,37,47);border:1px solid rgb(52,62,76);border-radius:8px;padding:10px;margin-top:6px;font-size:12px;line-height:1.7;color:rgb(160,170,185)');
-      dev.appendChild(el('div', '', 'دوس "ابدأ التسجيل"، وافتح الصفحة اللي عايز تسجّلها في اللعبة، وبعدين "وقف" و"نسخ النتيجة" وابعتها. أي توكن بيتشال من النص، بس راجعه قبل ما تبعته.'));
-      var line = el('div', 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px');
-      var rec = el('button', 'padding:6px 14px;border:0;border-radius:6px;color:white;font-size:13px;background:' + (recording ? 'rgb(185,28,28)' : 'rgb(79,70,229)'), recording ? '■ وقف' : '● ابدأ التسجيل');
-      rec.onclick = function () { if (!recording) recs = []; recording = !recording; render(); };
-      var cnt = el('span', 'font-family:monospace;color:rgb(232,235,240)', recs.length + ' طلب');
-      cnt.id = '__rzRecCount';
-      line.appendChild(rec); line.appendChild(cnt);
-      dev.appendChild(line);
-      if (recs.length) {
-        var line2 = el('div', 'display:flex;gap:8px;margin-top:8px');
-        var cp = el('button', 'padding:6px 14px;border:0;border-radius:6px;background:rgb(79,70,229);color:white;font-size:13px', 'نسخ النتيجة');
-        cp.onclick = function () { copy(recsText(), cp); };
-        var clr = el('button', 'padding:6px 14px;border:1px solid rgb(52,62,76);border-radius:6px;background:transparent;color:rgb(232,235,240);font-size:13px', 'مسح');
-        clr.onclick = function () { recs = []; render(); };
-        line2.appendChild(cp); line2.appendChild(clr);
-        dev.appendChild(line2);
-      }
-      box.appendChild(dev);
-    }
     box.appendChild(el('div', 'margin-top:10px;font-size:11px;color:rgb(160,170,185)', 'التوكن بيدي تحكم كامل في حسابك - متبعتوش لحد ومتصورش الشاشة دي. السكربت ده مبيبعتش أي حاجة لأي مكان.'));
     document.body.appendChild(box);
   }

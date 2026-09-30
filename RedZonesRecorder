@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RedZonesBot Recorder
 // @namespace    redzonesbot
-// @version      1.0
+// @version      1.1
 // @description  Sends the game's API requests and your taps to your own RedZonesBot server (admin only). Tokens and passwords are stripped before sending.
 // @match        https://redzones.io/*
 // @match        https://*.redzones.io/*
@@ -30,6 +30,9 @@
 
   var SKIP_URL = /analytics|telemetry|sentry|gtag|googletag|clarity|hotjar|firebase|posthog|mixpanel|doubleclick|\.(png|jpe?g|gif|webp|svg|ico|css|js|map|woff2?|ttf|mp3|mp4)(\?|$)/i;
   var HEX64 = /\b[0-9a-f]{64}\b/gi;
+  // background polling: keep one sample per minute instead of every call (it drowned the useful requests)
+  var POLL = /\/api\/(maintenance|notifications|player\/narrator-events|player\/attention|chat\/messages|game\/live|player\/activity)(\?|$)/i;
+  var pollSeen = {};
 
   function key() { return lsGet('rzrec_key') || ''; }
   function paused() { return lsGet('rzrec_paused') === '1'; }
@@ -58,6 +61,17 @@
     if (typeof FormData !== 'undefined' && b instanceof FormData) return '[formdata]';
     return '[non-text body]';
   }
+
+  function tooChatty(method, url) {
+    var m = String(url).match(POLL);
+    if (!m) return false;
+    var k = m[1], now = Date.now();
+    if (pollSeen[k] && now - pollSeen[k] < 60000) return true;
+    pollSeen[k] = now;
+    return false;
+  }
+
+  function resClip(method, text) { return text == null ? null : clip(text, method === 'GET' ? 1500 : MAX_TEXT); }
 
   function push(ev) {
     try {
@@ -105,17 +119,19 @@
       var dupKey = method + ' ' + url;
       p.then(function (resp) {
         try {
+          if (tooChatty(method, url)) return;
           if (method === 'GET' && lastSeen[dupKey] && Date.now() - lastSeen[dupKey] < 5000) return;
           lastSeen[dupKey] = Date.now();
           var ct = (resp.headers && resp.headers.get('content-type')) || '';
           var done = function (text) {
-            push({ kind: 'req', method: method, url: shortUrl(url), status: resp.status, ms: Date.now() - t0, req: req == null ? null : clip(req, MAX_TEXT), res: text == null ? null : clip(text, MAX_TEXT) });
+            push({ kind: 'req', method: method, url: shortUrl(url), status: resp.status, ms: Date.now() - t0, req: req == null ? null : clip(req, MAX_TEXT), res: resClip(method, text) });
           };
           if (/json|text|xml/i.test(ct)) resp.clone().text().then(done, function () { done(null); });
           else done(null);
         } catch (e) {}
-      }, function () {
-        push({ kind: 'req', method: method, url: shortUrl(url), status: 0, ms: Date.now() - t0, req: req == null ? null : clip(req, MAX_TEXT), res: 'network error' });
+      }, function (err) {
+        if (err && err.name === 'AbortError') return;  // the page cancelled it (navigation): not interesting
+        push({ kind: 'req', method: method, url: shortUrl(url), status: 0, ms: Date.now() - t0, req: req == null ? null : clip(req, MAX_TEXT), res: 'network error' + (err && err.name ? ': ' + err.name : '') });
       });
       return p;
     };
@@ -131,12 +147,13 @@
         info.t0 = Date.now(); info.req = bodyText(b);
         xhr.addEventListener('loadend', function () {
           try {
+            if (tooChatty(info.method, info.url)) return;
             var dk = info.method + ' ' + info.url;
             if (info.method === 'GET' && lastSeen[dk] && Date.now() - lastSeen[dk] < 5000) return;
             lastSeen[dk] = Date.now();
             var res = null;
             try { res = (xhr.responseType === '' || xhr.responseType === 'text') ? xhr.responseText : '[' + xhr.responseType + ']'; } catch (e) {}
-            push({ kind: 'req', method: info.method, url: shortUrl(info.url), status: xhr.status, ms: Date.now() - info.t0, req: info.req == null ? null : clip(info.req, MAX_TEXT), res: res == null ? null : clip(res, MAX_TEXT) });
+            push({ kind: 'req', method: info.method, url: shortUrl(info.url), status: xhr.status, ms: Date.now() - info.t0, req: info.req == null ? null : clip(info.req, MAX_TEXT), res: resClip(info.method, res) });
           } catch (e) {}
         });
       }

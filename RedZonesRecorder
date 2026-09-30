@@ -1,0 +1,235 @@
+// ==UserScript==
+// @name         RedZonesBot Recorder
+// @namespace    redzonesbot
+// @version      1.0
+// @description  Sends the game's API requests and your taps to your own RedZonesBot server (admin only). Tokens and passwords are stripped before sending.
+// @match        https://redzones.io/*
+// @match        https://*.redzones.io/*
+// @run-at       document-start
+// @updateURL    https://raw.githubusercontent.com/alielzahed49-art/RedZonesToken/refs/heads/main/RedZonesRecorder
+// @downloadURL  https://raw.githubusercontent.com/alielzahed49-art/RedZonesToken/refs/heads/main/RedZonesRecorder
+// @grant        none
+// ==/UserScript==
+
+(function () {
+  'use strict';
+  if (window.top !== window) return;
+  if (!/(^|\.)redzones\.io$/i.test(location.hostname)) return;
+  if (window.__rzRec) return;
+  window.__rzRec = true;
+
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} }
+
+  var BOT = (lsGet('rzrec_url') || 'https://redzonesbot-h5c1.onrender.com').replace(/\/+$/, '');
+  var ENDPOINT = BOT + '/api/recorder';
+  var SID = Math.random().toString(36).slice(2, 10);
+  var MAX_TEXT = 3000;
+  var buf = [], state = lsGet('rzrec_key') ? 'ok' : 'idle', timer = null, lastSeen = {}, lastNav = '', lastNavAt = 0;
+  var origFetch = window.fetch ? window.fetch.bind(window) : null;
+
+  var SKIP_URL = /analytics|telemetry|sentry|gtag|googletag|clarity|hotjar|firebase|posthog|mixpanel|doubleclick|\.(png|jpe?g|gif|webp|svg|ico|css|js|map|woff2?|ttf|mp3|mp4)(\?|$)/i;
+  var HEX64 = /\b[0-9a-f]{64}\b/gi;
+
+  function key() { return lsGet('rzrec_key') || ''; }
+  function paused() { return lsGet('rzrec_paused') === '1'; }
+  function clip(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + '…' : s; }
+  function clean(s) { return String(s).replace(HEX64, '[redacted]'); }
+
+  function shortUrl(u) {
+    try {
+      var x = new URL(u, location.href);
+      return (x.hostname === 'api.redzones.io' ? '' : x.origin) + x.pathname.replace(/^\/api(?=\/)/, '/api') + x.search;
+    } catch (e) { return String(u); }
+  }
+
+  function wanted(u) {
+    if (!u || u.indexOf(ENDPOINT) === 0 || SKIP_URL.test(u)) return false;
+    try {
+      var h = new URL(u, location.href).hostname;
+      return /(^|\.)redzones\.io$/i.test(h);
+    } catch (e) { return false; }
+  }
+
+  function bodyText(b) {
+    if (b == null) return null;
+    if (typeof b === 'string') return b;
+    if (typeof URLSearchParams !== 'undefined' && b instanceof URLSearchParams) return b.toString();
+    if (typeof FormData !== 'undefined' && b instanceof FormData) return '[formdata]';
+    return '[non-text body]';
+  }
+
+  function push(ev) {
+    try {
+      if (!key() || paused()) return;
+      ev.sid = SID; ev.t = Date.now();
+      ev.page = location.hash || location.pathname;
+      if (ev.url) ev.url = clean(ev.url);
+      buf.push(ev);
+      if (buf.length > 300) buf.shift();
+      paint();
+      if (buf.length >= 12) flush(false); else schedule();
+    } catch (e) {}
+  }
+
+  function schedule() { if (!timer) timer = setTimeout(function () { timer = null; flush(false); }, 3000); }
+
+  function flush(unload) {
+    if (!origFetch || !buf.length || !key()) return;
+    var batch = buf.splice(0, buf.length);
+    try {
+      origFetch(ENDPOINT, {
+        method: 'POST',
+        mode: 'cors',
+        keepalive: !!unload,
+        credentials: 'omit',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body: JSON.stringify({ k: key(), ev: batch })
+      }).then(function (r) {
+        return r.json().then(function (j) { state = j && j.paused ? 'paused' : (j && j.ok ? 'ok' : 'bad'); paint(); }, function () { state = r.ok ? 'ok' : 'bad'; paint(); });
+      }).catch(function () { buf = batch.concat(buf).slice(-300); state = 'bad'; paint(); });
+    } catch (e) { buf = batch.concat(buf).slice(-300); state = 'bad'; paint(); }
+  }
+
+  // ---- fetch ----
+  if (origFetch) {
+    window.fetch = function (input, init) {
+      var t0 = Date.now(), url = '', method = 'GET', req = null;
+      try {
+        url = typeof input === 'string' ? input : (input && input.url) || String(input);
+        method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+        req = bodyText(init && init.body);
+      } catch (e) {}
+      var p = origFetch.apply(this, arguments);
+      if (!wanted(url)) return p;
+      var dupKey = method + ' ' + url;
+      p.then(function (resp) {
+        try {
+          if (method === 'GET' && lastSeen[dupKey] && Date.now() - lastSeen[dupKey] < 5000) return;
+          lastSeen[dupKey] = Date.now();
+          var ct = (resp.headers && resp.headers.get('content-type')) || '';
+          var done = function (text) {
+            push({ kind: 'req', method: method, url: shortUrl(url), status: resp.status, ms: Date.now() - t0, req: req == null ? null : clip(req, MAX_TEXT), res: text == null ? null : clip(text, MAX_TEXT) });
+          };
+          if (/json|text|xml/i.test(ct)) resp.clone().text().then(done, function () { done(null); });
+          else done(null);
+        } catch (e) {}
+      }, function () {
+        push({ kind: 'req', method: method, url: shortUrl(url), status: 0, ms: Date.now() - t0, req: req == null ? null : clip(req, MAX_TEXT), res: 'network error' });
+      });
+      return p;
+    };
+  }
+
+  // ---- XHR ----
+  try {
+    var xOpen = XMLHttpRequest.prototype.open, xSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (m, u) { this.__rz = { method: String(m || 'GET').toUpperCase(), url: String(u || '') }; return xOpen.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function (b) {
+      var info = this.__rz, xhr = this;
+      if (info && wanted(info.url)) {
+        info.t0 = Date.now(); info.req = bodyText(b);
+        xhr.addEventListener('loadend', function () {
+          try {
+            var dk = info.method + ' ' + info.url;
+            if (info.method === 'GET' && lastSeen[dk] && Date.now() - lastSeen[dk] < 5000) return;
+            lastSeen[dk] = Date.now();
+            var res = null;
+            try { res = (xhr.responseType === '' || xhr.responseType === 'text') ? xhr.responseText : '[' + xhr.responseType + ']'; } catch (e) {}
+            push({ kind: 'req', method: info.method, url: shortUrl(info.url), status: xhr.status, ms: Date.now() - info.t0, req: info.req == null ? null : clip(info.req, MAX_TEXT), res: res == null ? null : clip(res, MAX_TEXT) });
+          } catch (e) {}
+        });
+      }
+      return xSend.apply(this, arguments);
+    };
+  } catch (e) {}
+
+  // ---- taps / changes / navigation ----
+  function inUi(el) { return el && el.closest && el.closest('#rzrec-ui'); }
+
+  function describe(el) {
+    var t = el.closest ? (el.closest('button,a,[role=button],[role=tab],[role=menuitem],label,li,input,select,textarea') || el) : el;
+    var txt = '';
+    if (!(t.tagName === 'INPUT' && /password/i.test(t.type))) {
+      txt = (t.getAttribute('aria-label') || t.title || t.innerText || t.placeholder || t.name || '');
+    }
+    txt = clip(String(txt).replace(/\s+/g, ' ').trim(), 60);
+    var cls = (typeof t.className === 'string' ? t.className : '').trim().split(/\s+/).slice(0, 2).join('.');
+    return t.tagName.toLowerCase() + (t.id ? '#' + t.id : '') + (cls ? '.' + cls : '') + (txt ? ': ' + txt : '');
+  }
+
+  document.addEventListener('click', function (e) {
+    try { if (e.target && !inUi(e.target)) push({ kind: 'click', note: describe(e.target) }); } catch (x) {}
+  }, true);
+
+  document.addEventListener('change', function (e) {
+    try {
+      var t = e.target;
+      if (!t || inUi(t)) return;
+      var v;
+      if (t.tagName === 'SELECT') v = t.options[t.selectedIndex] ? t.options[t.selectedIndex].text : t.value;
+      else if (t.type === 'checkbox' || t.type === 'radio') v = t.checked ? 'on' : 'off';
+      else v = '(text edited)';
+      push({ kind: 'change', note: describe(t) + ' = ' + clip(v, 40) });
+    } catch (x) {}
+  }, true);
+
+  function nav() {
+    var where = clip(location.pathname + location.search + location.hash, 120), now = Date.now();
+    if (where === lastNav && now - lastNavAt < 500) return;  // hashchange + popstate both fire for one change
+    lastNav = where; lastNavAt = now;
+    push({ kind: 'nav', note: where });
+  }
+  window.addEventListener('hashchange', nav);
+  window.addEventListener('popstate', nav);
+  try {
+    ['pushState', 'replaceState'].forEach(function (m) {
+      var o = history[m];
+      history[m] = function () { var r = o.apply(this, arguments); setTimeout(nav, 0); return r; };
+    });
+  } catch (e) {}
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') flush(true); });
+  window.addEventListener('pagehide', function () { flush(true); });
+
+  // ---- tiny status bubble (tap for the menu) ----
+  var ui, dot;
+  var COLORS = { idle: '#6b7684', ok: '#14b8a6', paused: '#d97706', bad: '#ef4444' };
+  function paint() {
+    if (!dot) return;
+    var s = !key() ? 'idle' : (paused() ? 'paused' : state);
+    dot.style.background = COLORS[s] || COLORS.idle;
+    dot.title = { idle: 'no key', ok: 'recording', paused: 'paused', bad: 'send failed' }[s] || '';
+    dot.textContent = buf.length ? String(Math.min(buf.length, 99)) : '';
+  }
+
+  function menu() {
+    var k = key();
+    var choice = prompt('RedZones Recorder\n1 = set key\n2 = pause / resume\n3 = send now\n4 = remove key\n' + (k ? '(key saved)' : '(no key yet)'), '');
+    if (choice === '1') { var nk = prompt('Paste the recorder key from the admin panel'); if (nk) { lsSet('rzrec_key', nk.trim()); state = 'ok'; } }
+    else if (choice === '2') { lsSet('rzrec_paused', paused() ? null : '1'); }
+    else if (choice === '3') { flush(false); }
+    else if (choice === '4') { lsSet('rzrec_key', null); buf = []; }
+    paint();
+  }
+
+  function mount() {
+    if (ui || !document.body) return;
+    ui = document.createElement('div');
+    ui.id = 'rzrec-ui';
+    ui.style.cssText = 'position:fixed;left:8px;bottom:120px;z-index:2147483646;';
+    dot = document.createElement('div');
+    dot.style.cssText = 'width:26px;height:26px;border-radius:50%;opacity:.75;color:#fff;font:700 11px/26px system-ui,sans-serif;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.5);cursor:pointer;';
+    dot.addEventListener('click', function (e) { e.stopPropagation(); menu(); });
+    ui.appendChild(dot);
+    document.body.appendChild(ui);
+    paint();
+    if (!key()) setTimeout(function () {
+      if (key() || lsGet('rzrec_asked')) return;
+      lsSet('rzrec_asked', '1');
+      var nk = prompt('RedZones Recorder: paste the recorder key from the admin panel (or cancel to skip)');
+      if (nk && nk.trim()) { lsSet('rzrec_key', nk.trim()); state = 'ok'; paint(); }
+    }, 1500);
+  }
+  if (document.body) mount(); else document.addEventListener('DOMContentLoaded', mount);
+  nav();
+})();

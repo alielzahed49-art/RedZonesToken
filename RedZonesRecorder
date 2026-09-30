@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RedZonesBot Recorder
 // @namespace    redzonesbot
-// @version      1.1
+// @version      1.2
 // @description  Sends the game's API requests and your taps to your own RedZonesBot server (admin only). Tokens and passwords are stripped before sending.
 // @match        https://redzones.io/*
 // @match        https://*.redzones.io/*
@@ -71,7 +71,9 @@
     return false;
   }
 
-  function resClip(method, text) { return text == null ? null : clip(text, method === 'GET' ? 1500 : MAX_TEXT); }
+  // factory lists are long but exactly what is needed to build the factory picker: keep them whole
+  var BIG = /includeFactories|\/api\/factories|work-quote|\/api\/regions\//i;
+  function resClip(method, text, url) { return text == null ? null : clip(text, BIG.test(String(url)) ? 12000 : (method === 'GET' ? 1500 : MAX_TEXT)); }
 
   function push(ev) {
     try {
@@ -124,7 +126,7 @@
           lastSeen[dupKey] = Date.now();
           var ct = (resp.headers && resp.headers.get('content-type')) || '';
           var done = function (text) {
-            push({ kind: 'req', method: method, url: shortUrl(url), status: resp.status, ms: Date.now() - t0, req: req == null ? null : clip(req, MAX_TEXT), res: resClip(method, text) });
+            push({ kind: 'req', method: method, url: shortUrl(url), status: resp.status, ms: Date.now() - t0, req: req == null ? null : clip(req, MAX_TEXT), res: resClip(method, text, url) });
           };
           if (/json|text|xml/i.test(ct)) resp.clone().text().then(done, function () { done(null); });
           else done(null);
@@ -153,7 +155,7 @@
             lastSeen[dk] = Date.now();
             var res = null;
             try { res = (xhr.responseType === '' || xhr.responseType === 'text') ? xhr.responseText : '[' + xhr.responseType + ']'; } catch (e) {}
-            push({ kind: 'req', method: info.method, url: shortUrl(info.url), status: xhr.status, ms: Date.now() - info.t0, req: info.req == null ? null : clip(info.req, MAX_TEXT), res: resClip(info.method, res) });
+            push({ kind: 'req', method: info.method, url: shortUrl(info.url), status: xhr.status, ms: Date.now() - info.t0, req: info.req == null ? null : clip(info.req, MAX_TEXT), res: resClip(info.method, res, info.url) });
           } catch (e) {}
         });
       }
